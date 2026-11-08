@@ -1,0 +1,17 @@
+[project]
+name = "scrappy-doo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Enrique Matta-Rodriguez", email = "enrique.j.matta@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+scrappy-doo = "scrappy_doo:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"

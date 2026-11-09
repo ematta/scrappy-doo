@@ -40,6 +40,17 @@ class ExecutionStore:
                     execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
                     entry TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS knowledge (
+                    id TEXT PRIMARY KEY,
+                    application TEXT NOT NULL,
+                    environment TEXT,
+                    text TEXT NOT NULL,
+                    source_execution_id TEXT NOT NULL,
+                    source_deleted INTEGER NOT NULL DEFAULT 0,
+                    evidence TEXT NOT NULL,
+                    conflicts_with TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
                 """
             )
 
@@ -204,4 +215,13 @@ class ExecutionStore:
         if directory.exists():
             shutil.rmtree(directory)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM knowledge WHERE source_execution_id = ? AND status IN ('proposed', 'rejected')",
+                (execution_id,),
+            )
+            connection.execute(
+                "UPDATE knowledge SET source_deleted = 1 WHERE source_execution_id = ?",
+                (execution_id,),
+            )
             connection.execute("DELETE FROM executions WHERE id = ?", (execution_id,))

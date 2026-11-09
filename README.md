@@ -53,3 +53,17 @@ status, required and unauthorized tool calls, evidence references, and knowledge
 review. An artifact's presence does not prove its content supports a finding;
 the trace is not tamper-proof, and passing these checks is not a live end-to-end
 evaluation.
+
+Run the controlled evaluation with the OpenRouter key and Playwright MCP
+available in the environment:
+
+```sh
+PYTHONPATH=src python3 -m scrappy_doo.controlled_evaluation --data-dir /path/to/evaluation-data
+```
+
+The command starts a sample server on an ephemeral loopback port and runs three
+separate browser sessions. Follow the terminal prompts to sign in manually; the
+fixture credentials are `qa` / `test-password`. The evaluation makes live model
+requests, records each execution in the selected data directory, and reports
+whether the observed outcomes and traces match the known scenarios. Browser
+origin filtering is best effort, not strict network isolation.

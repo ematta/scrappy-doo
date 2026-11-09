@@ -42,3 +42,10 @@ approved knowledge. `scrappy-doo --help` shows the available commands.
 Runs select approved knowledge using shared words with the goal and record which
 items were provided to the model. New evidence-backed observations are saved as
 proposals for review; they do not become approved knowledge automatically.
+
+`scrappy_doo.evaluation` scores controlled scenarios against instrumented
+execution traces. Its checks include result and status, required and unauthorized
+tool calls, evidence references, and knowledge review. The caller must supply
+complete, trustworthy instrumentation. An artifact's presence does not prove its
+content supports a finding, and passing these checks is not a live end-to-end
+evaluation.

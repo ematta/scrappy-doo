@@ -73,11 +73,13 @@ class ExecutionRunner:
         tools: Mapping[str, Tool],
         approve: Callable[[ToolCall], bool | None] | None = None,
         clock: Callable[[], float] | None = None,
+        trace: Any | None = None,
     ):
         self._model = model
         self._tools = dict(tools)
         self._approve = approve
         self._clock = clock or time.monotonic
+        self._trace = trace
         self.proposals: tuple[KnowledgeProposal, ...] = ()
 
     @staticmethod
@@ -110,6 +112,13 @@ class ExecutionRunner:
         calls = 0
         findings: list[Finding] = []
         observations: list[Observation] = []
+
+        if self._trace is not None:
+            try:
+                self._trace.activate()
+            except Exception:
+                self._trace.mark_failed()
+                return self._blocked(findings, goal, "Trace recording unavailable")
 
         def timed_out() -> bool:
             return (
@@ -148,6 +157,13 @@ class ExecutionRunner:
                     return self._blocked(findings, goal, "Invalid model response")
                 if not isinstance(response.name, str) or not isinstance(response.arguments, dict):
                     return self._blocked(findings, goal, "Invalid tool request")
+                event_id = None
+                if self._trace is not None:
+                    try:
+                        event_id = self._trace.request_tool(response.name)
+                    except Exception:
+                        self._trace.mark_failed()
+                        return self._blocked(findings, goal, "Trace recording unavailable")
                 tool = self._tools.get(response.name)
                 if tool is None:
                     return self._blocked(findings, goal, "Unknown tool requested")
@@ -171,6 +187,12 @@ class ExecutionRunner:
                         return self._blocked(findings, goal, "Action not approved")
                 if timed_out():
                     return self._blocked(findings, goal, "Active execution time limit reached")
+                if self._trace is not None:
+                    try:
+                        self._trace.start_tool(event_id)
+                    except Exception:
+                        self._trace.mark_failed()
+                        return self._blocked(findings, goal, "Trace recording unavailable")
                 calls += 1
                 try:
                     output = tool.handler(**response.arguments)

@@ -11,13 +11,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from scrappy_doo.browser import BrowserConfig, BrowserError, BrowserSession
-from scrappy_doo.execution import Execution, Finding, FindingResult
+from scrappy_doo.execution import Execution, ExecutionStatus, Finding, FindingResult
 from scrappy_doo.knowledge import KnowledgeStore
 from scrappy_doo.local_tools import LocalToolError, LocalTools
 from scrappy_doo.openrouter import OpenRouterError, OpenRouterModel
 from scrappy_doo.orchestration import ExecutionRunner, KnowledgeProposal, RunPolicy, Tool, ToolCall
 from scrappy_doo.reporting import format_report
 from scrappy_doo.storage import ExecutionStore
+from scrappy_doo.tracing import TraceRecorder
 
 
 class CLIError(Exception):
@@ -162,6 +163,10 @@ class LocalRuntime:
     def run(self, *, application: str, environment: dict[str, Any], goal: str, approve, manual_sign_in) -> Execution:
         if self.browser is None:
             raise CLIError("Browser preflight has not completed")
+        trace = environment["_trace"]
+        trace.activate()
+        navigation_event = trace.request_tool("browser_navigate")
+        trace.start_tool(navigation_event)
         self.browser.call("browser_navigate", {"url": environment["url"]})
         self.browser.begin_manual_sign_in()
         if not manual_sign_in():
@@ -216,7 +221,7 @@ class LocalRuntime:
             tool_schemas=schemas, model=environment["model"],
             approved_knowledge=environment["approved_knowledge"],
         )
-        runner = ExecutionRunner(model=model, tools=tools, approve=approve)
+        runner = ExecutionRunner(model=model, tools=tools, approve=approve, trace=trace)
         execution = runner.run(goal=goal, policy=RunPolicy(
             allowed_tools=frozenset(tools) - actions,
             prohibited_tools=frozenset() if environment["allow_changes"] else frozenset(actions),
@@ -343,6 +348,13 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
                 application=args.application, environment=args.environment, goal=args.goal,
             )
             environment["approved_knowledge"] = tuple(knowledge_store.get(item) for item in selected_ids)
+            store = ExecutionStore(data_dir)
+            execution_id = store.save_execution(
+                application=args.application, environment=args.environment,
+                execution=Execution(findings=(), goal_verified=False, status=ExecutionStatus.INTERRUPTED),
+            )
+            recorder = TraceRecorder(store=store, execution_id=execution_id)
+            environment["_trace"] = recorder
 
             def approve(call: ToolCall) -> bool:
                 return _yes(input_fn, f"Approve {call.name} with {call.arguments}? [y/N] ")
@@ -354,31 +366,29 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
                 application=args.application, environment=environment, goal=args.goal,
                 approve=approve, manual_sign_in=manual_sign_in,
             )
-            store = ExecutionStore(data_dir)
-            execution_id = store.save_execution(application=args.application, environment=args.environment, execution=execution)
             for name, content in getattr(runtime, "artifacts", {}).items():
                 store.save_artifact(execution_id, name, content)
             store.record_knowledge_used(execution_id, tuple(selected_ids))
             for entry in getattr(runtime, "history", ()):
                 store.append_history(execution_id, entry)
             store.save_report(execution_id, format_report(execution))
-            print(f"Execution: {execution_id}\n{format_report(execution)}", file=stdout)
+            proposal_messages = []
             for proposal in getattr(runtime, "proposals", ()):
                 if not isinstance(proposal, KnowledgeProposal):
-                    print("Proposal skipped: invalid proposal", file=stdout)
+                    proposal_messages.append("Proposal skipped: invalid proposal")
                     continue
                 if (not isinstance(proposal.evidence, tuple) or not proposal.evidence
                         or any(not isinstance(reference, str) or reference not in getattr(runtime, "artifacts", {})
                                for reference in proposal.evidence)):
-                    print("Proposal skipped: supporting evidence was not captured", file=stdout)
+                    proposal_messages.append("Proposal skipped: supporting evidence was not captured")
                     continue
                 if proposal.environment not in (None, args.environment):
-                    print("Proposal skipped: environment does not match the run", file=stdout)
+                    proposal_messages.append("Proposal skipped: environment does not match the run")
                     continue
                 if (not isinstance(proposal.conflicts_with, tuple)
                         or any(not isinstance(reference, str) or reference not in selected_ids
                                for reference in proposal.conflicts_with)):
-                    print("Proposal skipped: conflict does not refer to selected approved knowledge", file=stdout)
+                    proposal_messages.append("Proposal skipped: conflict does not refer to selected approved knowledge")
                     continue
                 try:
                     proposal_id = knowledge_store.propose(
@@ -387,9 +397,13 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
                         conflicts_with=proposal.conflicts_with,
                     )
                 except (KeyError, ValueError, TypeError):
-                    print("Proposal skipped: invalid knowledge proposal", file=stdout)
+                    proposal_messages.append("Proposal skipped: invalid knowledge proposal")
                     continue
-                print(f"Knowledge proposal: {proposal_id}", file=stdout)
+                proposal_messages.append(f"Knowledge proposal: {proposal_id}")
+            recorder.finish(execution)
+            print(f"Execution: {execution_id}\n{format_report(execution)}", file=stdout)
+            for message in proposal_messages:
+                print(message, file=stdout)
             return 0
         finally:
             if hasattr(runtime, "close"):

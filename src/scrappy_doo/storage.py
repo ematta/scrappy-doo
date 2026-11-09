@@ -56,6 +56,19 @@ class ExecutionStore:
                     knowledge_id TEXT NOT NULL,
                     PRIMARY KEY (execution_id, knowledge_id)
                 );
+                CREATE TABLE IF NOT EXISTS execution_traces (
+                    execution_id TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE,
+                    active INTEGER NOT NULL DEFAULT 0,
+                    complete INTEGER NOT NULL DEFAULT 0,
+                    proposals TEXT
+                );
+                CREATE TABLE IF NOT EXISTS execution_tool_events (
+                    id INTEGER PRIMARY KEY,
+                    execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    authorized INTEGER NOT NULL DEFAULT 0,
+                    executed INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
 
@@ -153,6 +166,11 @@ class ExecutionStore:
                 (execution_id,),
             ).fetchall()
         return tuple(row[0] for row in rows)
+
+    def evaluation_trace(self, execution_id: str):
+        from scrappy_doo.tracing import TraceRecorder
+
+        return TraceRecorder(store=self, execution_id=execution_id).snapshot()
 
     def list_executions(self, *, application: str, environment: str) -> list[str]:
         with self._connect() as connection:

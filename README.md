@@ -44,8 +44,12 @@ items were provided to the model. New evidence-backed observations are saved as
 proposals for review; they do not become approved knowledge automatically.
 
 `scrappy_doo.evaluation` scores controlled scenarios against instrumented
-execution traces. Its checks include result and status, required and unauthorized
-tool calls, evidence references, and knowledge review. The caller must supply
-complete, trustworthy instrumentation. An artifact's presence does not prove its
-content supports a finding, and passing these checks is not a live end-to-end
+execution traces. For a CLI run, obtain a trace with
+`ExecutionStore(data_dir).evaluation_trace(execution_id)`. The runtime records
+tool attempts before invoking handlers and finalizes the trace after saving the
+run. A started event does not prove an action completed, and incomplete or older
+uninstrumented traces are not considered complete. Checks include result and
+status, required and unauthorized tool calls, evidence references, and knowledge
+review. An artifact's presence does not prove its content supports a finding;
+the trace is not tamper-proof, and passing these checks is not a live end-to-end
 evaluation.

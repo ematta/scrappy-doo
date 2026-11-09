@@ -15,7 +15,7 @@ from scrappy_doo.execution import Execution, Finding, FindingResult
 from scrappy_doo.knowledge import KnowledgeStore
 from scrappy_doo.local_tools import LocalToolError, LocalTools
 from scrappy_doo.openrouter import OpenRouterError, OpenRouterModel
-from scrappy_doo.orchestration import ExecutionRunner, RunPolicy, Tool, ToolCall
+from scrappy_doo.orchestration import ExecutionRunner, KnowledgeProposal, RunPolicy, Tool, ToolCall
 from scrappy_doo.reporting import format_report
 from scrappy_doo.storage import ExecutionStore
 
@@ -133,10 +133,13 @@ def _yes(input_fn, prompt: str) -> bool:
 class LocalRuntime:
     """Connect the CLI to a local Playwright MCP session and OpenRouter."""
 
-    def __init__(self):
+    def __init__(self, *, browser_factory=BrowserSession, model_factory=OpenRouterModel):
         self.browser: BrowserSession | None = None
+        self._browser_factory = browser_factory
+        self._model_factory = model_factory
         self.artifacts: dict[str, bytes] = {}
         self.history: list[str] = []
+        self.proposals: tuple[KnowledgeProposal, ...] = ()
 
     def validate(self, *, application: str, environment: dict[str, Any]) -> None:
         if not os.environ.get("OPENROUTER_API_KEY", "").strip():
@@ -145,7 +148,7 @@ class LocalRuntime:
             raise CLIError("npx is required for Playwright MCP")
         if environment["capture_screenshots"] or environment["send_screenshots"]:
             raise CLIError("Screenshot capture and model transmission are not yet integrated")
-        self.browser = BrowserSession(config=BrowserConfig(
+        self.browser = self._browser_factory(config=BrowserConfig(
             allowed_origins=tuple(environment["allowed_origins"]),
             boundary_mode="best_effort", capture_screenshots=False,
         ))
@@ -169,6 +172,7 @@ class LocalRuntime:
             tools.update(LocalTools(roots=tuple(Path(root) for root in environment["local_roots"])).as_tools())
         self.artifacts = {}
         self.history = []
+        self.proposals = ()
 
         def capture(name, handler):
             def invoke(**arguments):
@@ -208,7 +212,10 @@ class LocalRuntime:
             }
             for name, tool in tools.items()
         }
-        model = OpenRouterModel(tool_schemas=schemas, model=environment["model"])
+        model = self._model_factory(
+            tool_schemas=schemas, model=environment["model"],
+            approved_knowledge=environment["approved_knowledge"],
+        )
         runner = ExecutionRunner(model=model, tools=tools, approve=approve)
         execution = runner.run(goal=goal, policy=RunPolicy(
             allowed_tools=frozenset(tools) - actions,
@@ -216,6 +223,7 @@ class LocalRuntime:
             max_tool_calls=environment["max_tool_calls"],
             max_active_seconds=environment["timeout_seconds"],
         ))
+        self.proposals = runner.proposals
         checked = []
         for finding in execution.findings:
             if (finding.current_result != FindingResult.INCONCLUSIVE
@@ -268,6 +276,9 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
             store = ExecutionStore(data_dir)
             if args.action == "show":
                 print(format_report(store.get_execution(args.execution_id)), file=stdout)
+                knowledge_ids = store.knowledge_used(args.execution_id)
+                if knowledge_ids:
+                    print(f"Knowledge provided: {', '.join(knowledge_ids)}", file=stdout)
             else:
                 store.review_finding(args.execution_id, args.finding, FindingResult(args.result), reason=args.reason)
                 print("Review saved", file=stdout)
@@ -323,8 +334,15 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
             print(f"Capture screenshots: {environment['capture_screenshots']}\nSend screenshots: {environment['send_screenshots']}", file=stdout)
             print(f"Capture text: {environment['capture_text']}\nCapture history: {environment['capture_history']}", file=stdout)
             print("Browser and local tool observations are sent to OpenRouter during the run.", file=stdout)
+            print("Relevant approved application knowledge may also be sent to OpenRouter.", file=stdout)
             if not _yes(input_fn, "Start execution? [y/N] "):
                 raise CLIError("Execution was not confirmed")
+
+            knowledge_store = KnowledgeStore(data_dir)
+            selected_ids = knowledge_store.select_relevant(
+                application=args.application, environment=args.environment, goal=args.goal,
+            )
+            environment["approved_knowledge"] = tuple(knowledge_store.get(item) for item in selected_ids)
 
             def approve(call: ToolCall) -> bool:
                 return _yes(input_fn, f"Approve {call.name} with {call.arguments}? [y/N] ")
@@ -340,10 +358,38 @@ def main(argv=None, *, input_fn=input, stdout=None, stderr=None, runtime=None) -
             execution_id = store.save_execution(application=args.application, environment=args.environment, execution=execution)
             for name, content in getattr(runtime, "artifacts", {}).items():
                 store.save_artifact(execution_id, name, content)
+            store.record_knowledge_used(execution_id, tuple(selected_ids))
             for entry in getattr(runtime, "history", ()):
                 store.append_history(execution_id, entry)
             store.save_report(execution_id, format_report(execution))
             print(f"Execution: {execution_id}\n{format_report(execution)}", file=stdout)
+            for proposal in getattr(runtime, "proposals", ()):
+                if not isinstance(proposal, KnowledgeProposal):
+                    print("Proposal skipped: invalid proposal", file=stdout)
+                    continue
+                if (not isinstance(proposal.evidence, tuple) or not proposal.evidence
+                        or any(not isinstance(reference, str) or reference not in getattr(runtime, "artifacts", {})
+                               for reference in proposal.evidence)):
+                    print("Proposal skipped: supporting evidence was not captured", file=stdout)
+                    continue
+                if proposal.environment not in (None, args.environment):
+                    print("Proposal skipped: environment does not match the run", file=stdout)
+                    continue
+                if (not isinstance(proposal.conflicts_with, tuple)
+                        or any(not isinstance(reference, str) or reference not in selected_ids
+                               for reference in proposal.conflicts_with)):
+                    print("Proposal skipped: conflict does not refer to selected approved knowledge", file=stdout)
+                    continue
+                try:
+                    proposal_id = knowledge_store.propose(
+                        application=args.application, environment=proposal.environment, text=proposal.text,
+                        source_execution_id=execution_id, evidence=proposal.evidence,
+                        conflicts_with=proposal.conflicts_with,
+                    )
+                except (KeyError, ValueError, TypeError):
+                    print("Proposal skipped: invalid knowledge proposal", file=stdout)
+                    continue
+                print(f"Knowledge proposal: {proposal_id}", file=stdout)
             return 0
         finally:
             if hasattr(runtime, "close"):

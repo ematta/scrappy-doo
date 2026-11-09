@@ -20,9 +20,18 @@ class FindingUpdate:
 
 
 @dataclass(frozen=True)
+class KnowledgeProposal:
+    text: str
+    environment: str | None
+    evidence: tuple[str, ...]
+    conflicts_with: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class FinalAnswer:
     findings: tuple[Finding, ...]
     goal_verified: bool
+    proposals: tuple[KnowledgeProposal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,7 @@ class ExecutionRunner:
         self._tools = dict(tools)
         self._approve = approve
         self._clock = clock or time.monotonic
+        self.proposals: tuple[KnowledgeProposal, ...] = ()
 
     @staticmethod
     def _supported(finding: Finding) -> Finding:
@@ -94,6 +104,7 @@ class ExecutionRunner:
         return Execution(findings=tuple([*findings, blocker]), goal_verified=False)
 
     def run(self, *, goal: str, policy: RunPolicy) -> Execution:
+        self.proposals = ()
         start = self._clock()
         wait_seconds = 0.0
         calls = 0
@@ -127,6 +138,10 @@ class ExecutionRunner:
                         return self._blocked(findings, goal, "Invalid final answer")
                     if any(not isinstance(item, Finding) for item in response.findings):
                         return self._blocked(findings, goal, "Invalid final answer findings")
+                    if (not isinstance(response.proposals, tuple)
+                            or any(not isinstance(item, KnowledgeProposal) for item in response.proposals)):
+                        return self._blocked(findings, goal, "Invalid knowledge proposals")
+                    self.proposals = response.proposals
                     findings.extend(self._supported(item) for item in response.findings)
                     return Execution(findings=tuple(findings), goal_verified=response.goal_verified)
                 if not isinstance(response, ToolCall):

@@ -51,6 +51,11 @@ class ExecutionStore:
                     conflicts_with TEXT NOT NULL,
                     status TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS execution_knowledge (
+                    execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+                    knowledge_id TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, knowledge_id)
+                );
                 """
             )
 
@@ -131,6 +136,23 @@ class ExecutionStore:
     def get_execution(self, execution_id: str) -> Execution:
         with self._connect() as connection:
             return self._load(connection, execution_id)
+
+    def record_knowledge_used(self, execution_id: str, knowledge_ids: tuple[str, ...]) -> None:
+        with self._connect() as connection:
+            self._load(connection, execution_id)
+            connection.executemany(
+                "INSERT OR IGNORE INTO execution_knowledge (execution_id, knowledge_id) VALUES (?, ?)",
+                ((execution_id, knowledge_id) for knowledge_id in knowledge_ids),
+            )
+
+    def knowledge_used(self, execution_id: str) -> tuple[str, ...]:
+        with self._connect() as connection:
+            self._load(connection, execution_id)
+            rows = connection.execute(
+                "SELECT knowledge_id FROM execution_knowledge WHERE execution_id = ? ORDER BY rowid",
+                (execution_id,),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
 
     def list_executions(self, *, application: str, environment: str) -> list[str]:
         with self._connect() as connection:

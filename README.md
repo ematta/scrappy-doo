@@ -38,3 +38,7 @@ Use `scrappy-doo report show ID` to inspect a run, `report review` to record a
 finding review, and `knowledge list --application NAME` to review proposals. Use
 `knowledge list --application NAME --approved --environment NAME` to list
 approved knowledge. `scrappy-doo --help` shows the available commands.
+
+Runs select approved knowledge using shared words with the goal and record which
+items were provided to the model. New evidence-backed observations are saved as
+proposals for review; they do not become approved knowledge automatically.

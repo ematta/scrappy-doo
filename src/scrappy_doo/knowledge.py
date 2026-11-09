@@ -1,6 +1,7 @@
 """Reviewable application knowledge associated with local executions."""
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -101,6 +102,25 @@ class KnowledgeStore:
                 (application, environment),
             ).fetchall()
         return [row[0] for row in rows]
+
+    def select_relevant(self, *, application: str, environment: str, goal: str, limit: int = 20) -> list[str]:
+        """Select approved knowledge sharing meaningful words with the goal."""
+        if limit <= 0:
+            raise ValueError("Knowledge selection limit must be positive")
+        common = {"a", "an", "and", "are", "as", "at", "by", "for", "from", "how", "in", "is",
+                  "it", "of", "on", "or", "that", "the", "to", "verify", "with"}
+
+        def terms(text: str) -> set[str]:
+            return {word for word in re.findall(r"\w+", text.casefold()) if len(word) > 1 and word not in common}
+
+        goal_terms = terms(goal)
+        ranked = []
+        for knowledge_id in self.list_approved(application=application, environment=environment):
+            score = len(goal_terms & terms(self.get(knowledge_id).text))
+            if score:
+                ranked.append((score, knowledge_id))
+        ranked.sort(key=lambda item: -item[0])
+        return [knowledge_id for _, knowledge_id in ranked[:limit]]
 
     def _transition(self, knowledge_id: str, *, expected: str, target: str) -> None:
         with self._executions._connect() as connection:

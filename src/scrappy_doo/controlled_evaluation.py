@@ -41,7 +41,9 @@ def build_scenarios(base_url: str) -> tuple[ControlledScenario, ...]:
     return tuple(
         ControlledScenario(
             case=EvaluationCase(name=name, goal=goal, expected_result=expected,
-                                required_tools=("browser_snapshot",)),
+                                required_tools=("browser_snapshot",),
+                                required_evidence_text=("503 Service Unavailable",)
+                                if expected == FindingResult.INCONCLUSIVE else ()),
             start_url=f"{origin}/cart/{path}",
         )
         for name, path, expected in (

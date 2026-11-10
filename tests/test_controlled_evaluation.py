@@ -144,7 +144,7 @@ class FakeAgentBoundary:
         execution = Execution(
             findings=(Finding(
                 expected="Cart total is $20", observed="Cart observation",
-                result=result, evidence=() if result == FindingResult.INCONCLUSIVE else (reference,),
+                result=result, evidence=(reference,),
                 reason="Service unavailable" if result == FindingResult.INCONCLUSIVE else None,
             ),),
             goal_verified=result == FindingResult.PASSED,
@@ -154,8 +154,8 @@ class FakeAgentBoundary:
         recorder.activate()
         event = recorder.request_tool("browser_snapshot")
         recorder.start_tool(event)
-        if result != FindingResult.INCONCLUSIVE:
-            self.store.save_artifact(execution_id, reference, b"Cart observation")
+        content = b"HTTP status: 503 Service Unavailable" if result == FindingResult.INCONCLUSIVE else b"Cart observation"
+        self.store.save_artifact(execution_id, reference, content)
         recorder.finish(execution)
         return execution_id
 

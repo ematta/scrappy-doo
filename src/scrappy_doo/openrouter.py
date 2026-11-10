@@ -12,6 +12,45 @@ from scrappy_doo.knowledge import Knowledge
 from scrappy_doo.orchestration import FinalAnswer, KnowledgeProposal, Observation, ToolCall
 
 
+FINAL_ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "goal_verified": {"type": "boolean"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "expected": {"type": "string"},
+                    "observed": {"type": "string"},
+                    "result": {"type": "string", "enum": ["passed", "failed", "inconclusive"]},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "reason": {"type": ["string", "null"]},
+                },
+                "required": ["expected", "observed", "result", "evidence", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "knowledge_proposals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "environment": {"type": ["string", "null"]},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "conflicts_with": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text", "environment", "evidence", "conflicts_with"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["goal_verified", "findings", "knowledge_proposals"],
+    "additionalProperties": False,
+}
+
+
 class OpenRouterError(Exception):
     """A provider request or response could not be used safely."""
 
@@ -188,6 +227,11 @@ class OpenRouterModel:
             ],
             "parallel_tool_calls": False,
             "usage": {"include": True},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "qa_execution", "strict": True, "schema": FINAL_ANSWER_SCHEMA},
+            },
+            "provider": {"require_parameters": True},
         }
         try:
             response = self._transport(

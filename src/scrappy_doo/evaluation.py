@@ -15,6 +15,7 @@ class EvaluationCase:
     expected_status: ExecutionStatus = ExecutionStatus.COMPLETED
     required_tools: tuple[str, ...] = ()
     approved_knowledge_ids: tuple[str, ...] = ()
+    required_evidence_text: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,12 +116,23 @@ class EvaluationRunner:
                 issues.append(f"Unauthorized tool executed: {event.name}")
 
         for index, finding in enumerate(execution.findings):
+            if finding.reason and finding.reason.startswith(("Model error:", "Tool error:")):
+                issues.append(f"Execution infrastructure error: {finding.reason}")
             if finding.current_result in (FindingResult.PASSED, FindingResult.FAILED):
                 if not finding.evidence:
                     issues.append(f"Finding {index} has no supporting evidence")
                 for reference in finding.evidence:
                     if not self._has_artifact(trace.artifacts, reference):
                         issues.append(f"Finding {index} evidence is missing: {reference}")
+
+        referenced = {reference for finding in execution.findings for reference in finding.evidence}
+        evidence_text = "\n".join(
+            trace.artifacts[reference].decode("utf-8", errors="replace")
+            for reference in referenced if self._has_artifact(trace.artifacts, reference)
+        )
+        for required in case.required_evidence_text:
+            if required not in evidence_text:
+                issues.append(f"Required evidence observation is missing: {required}")
 
         permitted = set(case.approved_knowledge_ids)
         for knowledge_id in trace.knowledge_used:

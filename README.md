@@ -67,3 +67,9 @@ fixture credentials are `qa` / `test-password`. The evaluation makes live model
 requests, records each execution in the selected data directory, and reports
 whether the observed outcomes and traces match the known scenarios. Browser
 origin filtering is best effort, not strict network isolation.
+
+The `strict_policy` and `isolation_proof` modules contain hypothetical policy
+decisions and simulated proof assessments. They do not configure or verify a
+network boundary, and their results cannot enable strict mode. A real proof
+still requires the isolated browser, proxy, protected viewer, and independent
+receiver checks described in `docs/research/macos-browser-isolation.md`.

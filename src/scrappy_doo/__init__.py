@@ -1,2 +1,4 @@
-def main() -> None:
-    print("Hello from scrappy-doo!")
+def main() -> int:
+    from scrappy_doo.cli import main as cli_main
+
+    return cli_main()

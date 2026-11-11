@@ -270,7 +270,7 @@ class CLIEvaluationTraceTests(unittest.TestCase):
                 return {"browser_snapshot": Tool(handler=lambda: "Cart total: $20")}
 
         class ModelDouble:
-            def __init__(self, *, tool_schemas, model, approved_knowledge):
+            def __init__(self, *, tool_schemas, model, approved_knowledge, required_initial_tool):
                 self.turn = 0
 
             def respond(self, *, goal, observations):

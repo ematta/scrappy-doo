@@ -213,7 +213,7 @@ class RuntimeKnowledgeTests(unittest.TestCase):
                 return {"browser_snapshot": orchestration.Tool(handler=lambda: "Cart is in the main menu")}
 
         class ModelDouble:
-            def __init__(self, *, tool_schemas, model, approved_knowledge):
+            def __init__(self, *, tool_schemas, model, approved_knowledge, required_initial_tool):
                 recorded["context"] = approved_knowledge
                 self.turn = 0
 

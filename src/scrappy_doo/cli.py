@@ -220,6 +220,7 @@ class LocalRuntime:
         model = self._model_factory(
             tool_schemas=schemas, model=environment["model"],
             approved_knowledge=environment["approved_knowledge"],
+            required_initial_tool="browser_snapshot",
         )
         runner = ExecutionRunner(model=model, tools=tools, approve=approve, trace=trace)
         execution = runner.run(goal=goal, policy=RunPolicy(

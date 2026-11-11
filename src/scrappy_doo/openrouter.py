@@ -82,6 +82,7 @@ class OpenRouterModel:
         transport: Callable[..., dict[str, Any]] | None = None,
         spending_limit: float | None = None,
         approved_knowledge: tuple[Knowledge, ...] = (),
+        required_initial_tool: str | None = None,
     ):
         self._api_key = api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")
         if not self._api_key.strip():
@@ -93,6 +94,9 @@ class OpenRouterModel:
         self._model = model
         self._transport = transport or _http_transport
         self._schemas = copy.deepcopy(tool_schemas)
+        if required_initial_tool is not None and required_initial_tool not in self._schemas:
+            raise OpenRouterError("Required initial tool is unavailable")
+        self._required_initial_tool = required_initial_tool
         self._approved_knowledge = tuple(approved_knowledge)
         self._messages: list[dict[str, Any]] = []
         self._goal: str | None = None
@@ -233,6 +237,11 @@ class OpenRouterModel:
             },
             "provider": {"require_parameters": True},
         }
+        initial_required = self._goal is None and self._required_initial_tool is not None
+        if initial_required:
+            body["tool_choice"] = {
+                "type": "function", "function": {"name": self._required_initial_tool},
+            }
         try:
             response = self._transport(
                 url="https://openrouter.ai/api/v1/chat/completions",
@@ -258,7 +267,12 @@ class OpenRouterModel:
 
         if finish_reason == "tool_calls":
             result = self._decode_tool_call(message)
+            if initial_required and result.name != self._required_initial_tool:
+                self._pending_call_id = None
+                raise OpenRouterError("Required initial tool was not selected")
         elif finish_reason == "stop" and not message.get("tool_calls"):
+            if initial_required:
+                raise OpenRouterError("Required initial tool was not selected")
             result = self._decode_final(message)
             self._pending_call_id = None
         else:

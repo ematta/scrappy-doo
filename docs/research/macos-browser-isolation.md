@@ -18,6 +18,48 @@ host services, policy changes, a viewer, or manual sign-in. It does not verify
 the candidate topology or establish strict isolation. OrbStack has not been
 established as equivalent to Docker Desktop for the remaining checks.
 
+The candidate browser build uses the v1.65.0-noble image index digest published
+in the [Microsoft Artifact Registry](https://mcr.microsoft.com/product/playwright)
+and pins [Playwright MCP 0.0.85](https://github.com/microsoft/playwright-mcp/blob/v0.0.85/package.json).
+Its manifest records the Chromium version and revision expected by that MCP
+dependency, and the image build checks those values. This is a candidate build,
+not evidence of a working browser, a protected viewer, or network isolation.
+On 2026-11-11 that image built on OrbStack 29.8.2, but a network-disabled
+Chromium startup with a non-root user, all capabilities dropped,
+no-new-privileges, and Chromium sandboxing enabled failed with “No usable
+sandbox.” A second attempt using Playwright's versioned seccomp profile failed
+inside the OCI runtime with a segmentation fault before Chromium started. The
+temporary diagnostic containers were removed. These observations do not
+establish whether a different supported runtime or configuration would work.
+
+Further checks on the same OrbStack runtime found that the kernel reports a
+nonzero user-namespace limit, but `unshare -Ur true` inside a non-root,
+network-disabled, capability-dropped container with no-new-privileges returns
+`Operation not permitted`. The Playwright seccomp-profile attempt produced an
+OCI runtime segmentation fault with a simple nginx image as well as with the
+browser image; the other configured runtime name produced the same result. The
+existing Docker Desktop context did not have a running daemon. These checks do
+not establish the root cause of the OCI crash. The Docker adapter now refuses
+to create a browser container unless an actual sandboxed Chromium launch under
+the same basic restrictions succeeds; this check is not a network-isolation
+proof.
+
+The candidate Docker adapter uses a pinned profile based on the [Playwright
+v1.65.0 seccomp profile](https://github.com/microsoft/playwright/blob/v1.65.0/utils/docker/seccomp_profile.json)
+for both the sandbox startup check and browser container. The only added rule
+allows the `chroot` syscall: Chromium uses it inside its namespace sandbox,
+and the original profile permits it only when the container has `CAP_SYS_CHROOT`.
+The kernel still checks the required capability; the container receives no
+added capabilities. The adapter verifies the profile's SHA-256 before use and
+refuses to start if it is missing or changed. This does not establish the
+network boundary.
+
+On 2026-11-11, Docker Desktop 29.9.3 launched headed Chromium 158.0.8127.18
+with this profile, networking disabled, all container capabilities dropped,
+no-new-privileges, and Chromium sandboxing enabled. The browser rendered a
+local test page. This verifies that launch on the tested runtime, not the
+proxy, viewer, or strict network isolation.
+
 ## Recommendation
 
 For a dynamically updated hostname allowlist, run a dedicated Playwright MCP server and browser in a Linux container on Docker Desktop for Mac, attached **only** to a dedicated Docker `internal` network. Put a separate, trusted egress proxy on that network and a second external network. Configure the browser to use the proxy for all supported traffic. Restrict the proxy to explicit approved DNS names and ports, and deny everything else. The browser container must have no Docker socket, no host networking, no additional network attachments, no privilege or network-administration capabilities, and no shared host credentials or unnecessary mounts. Use MCP stdio or a separately controlled management channel; do not expose the proxy's management interface to the browser network. Docker documents that an internal network has no default route and drops traffic to other networks, but also that its gateway and configured host services can remain reachable; explicitly test and restrict those paths. [Docker internal networks](https://docs.docker.com/reference/cli/docker/network/create/), [Docker security](https://docs.docker.com/engine/security/), [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/).

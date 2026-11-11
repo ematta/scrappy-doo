@@ -76,3 +76,10 @@ receiver checks described in `docs/research/macos-browser-isolation.md`.
 The `live_isolation_proof` module supplies a fail-closed orchestration seam,
 but no live browser, proxy, or receiver adapter. Its reports cannot certify
 isolation or enable strict mode, even when supplied observations pass.
+The candidate `docker_runtime` adapter and `isolated_browser_stack` construct
+container settings. `enforcing_proxy` and `https_intercepting_proxy` check
+requests through injected interfaces; they do not implement an HTTP listener
+or TLS interception. `protected_viewer` provides session checks but no display
+transport. A candidate browser build context exists under `containers/browser`,
+but certificate provisioning and the protected viewer are not integrated.
+The unit tests use doubles and do not establish network isolation.

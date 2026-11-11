@@ -2,6 +2,22 @@
 
 Research date: 2026-11-08. This is a design assessment based on vendor documentation, not a test of an implementation or a guarantee against a compromised host, hypervisor, Docker daemon, proxy, or kernel.
 
+## Partial local network check
+
+On 2026-11-11, a preliminary check used OrbStack 29.8.2 and the local
+`nginx:alpine` image with image ID
+`sha256:ef9a6e2b45c23a9693064eb858517632288d5da63bcb9f86c7cef4983290f41e`.
+A container on Docker's normal bridge could open a TCP connection to a separate
+nginx receiver on that bridge. A container attached only to a newly created
+internal network could not open the same connection. The containers and network
+were removed after the check.
+
+This only checks one direct TCP path between containers. It did not exercise a
+browser, proxy, HTTPS inspection, independent connection logging, DNS, UDP,
+host services, policy changes, a viewer, or manual sign-in. It does not verify
+the candidate topology or establish strict isolation. OrbStack has not been
+established as equivalent to Docker Desktop for the remaining checks.
+
 ## Recommendation
 
 For a dynamically updated hostname allowlist, run a dedicated Playwright MCP server and browser in a Linux container on Docker Desktop for Mac, attached **only** to a dedicated Docker `internal` network. Put a separate, trusted egress proxy on that network and a second external network. Configure the browser to use the proxy for all supported traffic. Restrict the proxy to explicit approved DNS names and ports, and deny everything else. The browser container must have no Docker socket, no host networking, no additional network attachments, no privilege or network-administration capabilities, and no shared host credentials or unnecessary mounts. Use MCP stdio or a separately controlled management channel; do not expose the proxy's management interface to the browser network. Docker documents that an internal network has no default route and drops traffic to other networks, but also that its gateway and configured host services can remain reachable; explicitly test and restrict those paths. [Docker internal networks](https://docs.docker.com/reference/cli/docker/network/create/), [Docker security](https://docs.docker.com/engine/security/), [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/).

@@ -73,3 +73,6 @@ decisions and simulated proof assessments. They do not configure or verify a
 network boundary, and their results cannot enable strict mode. A real proof
 still requires the isolated browser, proxy, protected viewer, and independent
 receiver checks described in `docs/research/macos-browser-isolation.md`.
+The `live_isolation_proof` module supplies a fail-closed orchestration seam,
+but no live browser, proxy, or receiver adapter. Its reports cannot certify
+isolation or enable strict mode, even when supplied observations pass.

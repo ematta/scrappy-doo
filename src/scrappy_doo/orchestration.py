@@ -1,5 +1,7 @@
 """Model-independent execution loop and tool authorization."""
 
+import copy
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -105,6 +107,58 @@ class ExecutionRunner:
         )
         return Execution(findings=tuple([*findings, blocker]), goal_verified=False)
 
+    @staticmethod
+    def _check_retry_explanation(finding: Finding, completed: list[tuple[str, dict[str, Any]]]) -> Finding:
+        """Qualify retry claims that cannot be matched to completed calls.
+
+        Arguments are compared only in memory and are never added to the trace.
+        This check covers common English retry wording, not all possible claims.
+        """
+        if not finding.reason:
+            return finding
+        sentences = re.split(r"(?<=[.!?])\s+", finding.reason)
+        changed = False
+        checked = []
+        for sentence in sentences:
+            text = sentence.casefold()
+            if not re.search(r"\b(?:retry(?:ing|s)?|retried|retries)\b", text):
+                checked.append(sentence)
+                continue
+            if (re.search(r"\b(?:no|not|never|without|didn't|hasn't|wasn't)\b", text)
+                    or re.search(r"\b(?:may|might|could|should|recommend|consider|suggest)\b", text)):
+                checked.append(sentence)
+                continue
+            pending = bool(re.search(r"\b(?:retrying|will retry|going to retry)\b", text))
+            retry_count = 1
+            if re.search(r"\b(?:twice|two retries|2 retries|retry(?:ing)? 2 times|retried 2 times)\b", text):
+                retry_count = 2
+            elif re.search(r"\b(?:three retries|3 retries|retry(?:ing)? 3 times|retried 3 times)\b", text):
+                retry_count = 3
+
+            mentioned = set()
+            for _, arguments in completed:
+                for value in arguments.values():
+                    if isinstance(value, str) and value and re.search(r"(?<!\w)" + re.escape(value.casefold()) + r"(?!\w)", text):
+                        mentioned.add(value.casefold())
+            candidates = []
+            for name, arguments in completed:
+                values = {value.casefold() for value in arguments.values() if isinstance(value, str)}
+                if mentioned and not (mentioned & values):
+                    continue
+                count = sum(other_name == name and other_arguments == arguments for other_name, other_arguments in completed)
+                candidates.append(count)
+            if pending or not candidates or max(candidates) < retry_count + 1:
+                checked.append("Retry claim not verified against completed tool calls.")
+                changed = True
+            else:
+                checked.append(sentence)
+        if not changed:
+            return finding
+        return Finding(
+            expected=finding.expected, observed=finding.observed, result=finding.result,
+            evidence=finding.evidence, reason=" ".join(checked),
+        )
+
     def run(self, *, goal: str, policy: RunPolicy) -> Execution:
         self.proposals = ()
         start = self._clock()
@@ -112,13 +166,23 @@ class ExecutionRunner:
         calls = 0
         findings: list[Finding] = []
         observations: list[Observation] = []
+        completed_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def checked(execution: Execution) -> Execution:
+            return Execution(
+                findings=tuple(self._check_retry_explanation(item, completed_calls) for item in execution.findings),
+                goal_verified=execution.goal_verified, status=execution.status, cleanup_status=execution.cleanup_status,
+            )
+
+        def blocked(reason: str) -> Execution:
+            return checked(self._blocked(findings, goal, reason))
 
         if self._trace is not None:
             try:
                 self._trace.activate()
             except Exception:
                 self._trace.mark_failed()
-                return self._blocked(findings, goal, "Trace recording unavailable")
+                return blocked("Trace recording unavailable")
 
         def timed_out() -> bool:
             return (
@@ -129,80 +193,82 @@ class ExecutionRunner:
         try:
             for _ in range(policy.max_model_turns):
                 if timed_out():
-                    return self._blocked(findings, goal, "Active execution time limit reached")
+                    return blocked("Active execution time limit reached")
                 try:
                     response = self._model.respond(goal=goal, observations=tuple(observations))
                 except Exception as error:
-                    return self._blocked(findings, goal, f"Model error: {error}")
+                    return blocked(f"Model error: {error}")
                 if timed_out():
-                    return self._blocked(findings, goal, "Active execution time limit reached")
+                    return blocked("Active execution time limit reached")
 
                 if isinstance(response, FindingUpdate):
                     if not isinstance(response.finding, Finding):
-                        return self._blocked(findings, goal, "Invalid finding update")
+                        return blocked("Invalid finding update")
                     findings.append(self._supported(response.finding))
                     continue
                 if isinstance(response, FinalAnswer):
                     if not isinstance(response.goal_verified, bool) or not isinstance(response.findings, tuple):
-                        return self._blocked(findings, goal, "Invalid final answer")
+                        return blocked("Invalid final answer")
                     if any(not isinstance(item, Finding) for item in response.findings):
-                        return self._blocked(findings, goal, "Invalid final answer findings")
+                        return blocked("Invalid final answer findings")
                     if (not isinstance(response.proposals, tuple)
                             or any(not isinstance(item, KnowledgeProposal) for item in response.proposals)):
-                        return self._blocked(findings, goal, "Invalid knowledge proposals")
+                        return blocked("Invalid knowledge proposals")
                     self.proposals = response.proposals
                     findings.extend(self._supported(item) for item in response.findings)
-                    return Execution(findings=tuple(findings), goal_verified=response.goal_verified)
+                    return checked(Execution(findings=tuple(findings), goal_verified=response.goal_verified))
                 if not isinstance(response, ToolCall):
-                    return self._blocked(findings, goal, "Invalid model response")
+                    return blocked("Invalid model response")
                 if not isinstance(response.name, str) or not isinstance(response.arguments, dict):
-                    return self._blocked(findings, goal, "Invalid tool request")
+                    return blocked("Invalid tool request")
                 event_id = None
                 if self._trace is not None:
                     try:
                         event_id = self._trace.request_tool(response.name)
                     except Exception:
                         self._trace.mark_failed()
-                        return self._blocked(findings, goal, "Trace recording unavailable")
+                        return blocked("Trace recording unavailable")
                 tool = self._tools.get(response.name)
                 if tool is None:
-                    return self._blocked(findings, goal, "Unknown tool requested")
+                    return blocked("Unknown tool requested")
                 if set(response.arguments) != set(tool.required_arguments):
-                    return self._blocked(findings, goal, "Invalid tool arguments")
+                    return blocked("Invalid tool arguments")
                 if response.name in policy.prohibited_tools:
-                    return self._blocked(findings, goal, "Tool prohibited by environment")
+                    return blocked("Tool prohibited by environment")
                 if calls >= policy.max_tool_calls:
-                    return self._blocked(findings, goal, "Tool call limit reached")
+                    return blocked("Tool call limit reached")
                 if response.name not in policy.allowed_tools:
                     if self._approve is None:
-                        return self._blocked(findings, goal, "Action requires approval")
+                        return blocked("Action requires approval")
                     wait_start = self._clock()
                     try:
                         approved = self._approve(response)
                     except Exception as error:
-                        return self._blocked(findings, goal, f"Approval unavailable: {error}")
+                        return blocked(f"Approval unavailable: {error}")
                     finally:
                         wait_seconds += self._clock() - wait_start
                     if approved is not True:
-                        return self._blocked(findings, goal, "Action not approved")
+                        return blocked("Action not approved")
                 if timed_out():
-                    return self._blocked(findings, goal, "Active execution time limit reached")
+                    return blocked("Active execution time limit reached")
                 if self._trace is not None:
                     try:
                         self._trace.start_tool(event_id)
                     except Exception:
                         self._trace.mark_failed()
-                        return self._blocked(findings, goal, "Trace recording unavailable")
+                        return blocked("Trace recording unavailable")
                 calls += 1
                 try:
+                    arguments = copy.deepcopy(response.arguments)
                     output = tool.handler(**response.arguments)
                 except Exception as error:
-                    return self._blocked(findings, goal, f"Tool error: {error}")
+                    return blocked(f"Tool error: {error}")
                 if not isinstance(output, str):
-                    return self._blocked(findings, goal, "Invalid tool result")
+                    return blocked("Invalid tool result")
+                completed_calls.append((response.name, arguments))
                 observations.append(Observation(content=output))
-            return self._blocked(findings, goal, "Model turn limit reached")
+            return blocked("Model turn limit reached")
         except KeyboardInterrupt:
-            return Execution(
+            return checked(Execution(
                 findings=tuple(findings), goal_verified=False, status=ExecutionStatus.INTERRUPTED
-            )
+            ))

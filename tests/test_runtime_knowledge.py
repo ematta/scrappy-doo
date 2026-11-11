@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import scrappy_doo.orchestration as orchestration
 from scrappy_doo.cli import LocalRuntime, main
-from scrappy_doo.execution import Execution
+from scrappy_doo.execution import Execution, Finding, FindingResult
 from scrappy_doo.knowledge import KnowledgeStore
 from scrappy_doo.openrouter import OpenRouterError, OpenRouterModel
 from scrappy_doo.storage import ExecutionStore
@@ -222,7 +222,11 @@ class RuntimeKnowledgeTests(unittest.TestCase):
                 if self.turn == 1:
                     return orchestration.ToolCall(name="browser_snapshot", arguments={})
                 return orchestration.FinalAnswer(
-                    findings=(), goal_verified=False,
+                    findings=(Finding(
+                        expected="Verify cart total", observed="Cart is in the main menu",
+                        result=FindingResult.INCONCLUSIVE, evidence=("observations/0001.txt",),
+                        reason="The captured page does not show a cart total",
+                    ),), goal_verified=False,
                     proposals=(orchestration.KnowledgeProposal(
                         text="Cart is in the main menu", environment="staging",
                         evidence=("observations/0001.txt",), conflicts_with=(),

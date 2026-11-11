@@ -222,7 +222,24 @@ class LocalRuntime:
             approved_knowledge=environment["approved_knowledge"],
             required_initial_tool="browser_snapshot",
         )
-        runner = ExecutionRunner(model=model, tools=tools, approve=approve, trace=trace)
+
+        def validate_answer(findings: tuple[Finding, ...]) -> str | None:
+            supported = bool(findings) and all(
+                finding.evidence
+                and all(reference in self.artifacts for reference in finding.evidence)
+                and (finding.current_result != FindingResult.INCONCLUSIVE
+                     or (isinstance(finding.reason, str) and finding.reason.strip()))
+                for finding in findings
+            )
+            if supported:
+                return None
+            references = ", ".join(sorted(self.artifacts)) or "none"
+            return ("Return at least one finding with an explanation and only captured evidence references. "
+                    f"Available captured evidence references: {references}. "
+                    "If no captured evidence is available, do not invent a reference.")
+
+        runner = ExecutionRunner(model=model, tools=tools, approve=approve, trace=trace,
+                                 validate_answer=validate_answer)
         execution = runner.run(goal=goal, policy=RunPolicy(
             allowed_tools=frozenset(tools) - actions,
             prohibited_tools=frozenset() if environment["allow_changes"] else frozenset(actions),
@@ -230,6 +247,17 @@ class LocalRuntime:
             max_active_seconds=environment["timeout_seconds"],
         ))
         self.proposals = runner.proposals
+        if runner.correction_failed:
+            reference = next(reversed(self.artifacts), None)
+            observed = (self.artifacts[reference].decode("utf-8", errors="replace")[:4000]
+                        if reference is not None else "No captured observation is available")
+            diagnostic = Finding(
+                expected=goal, observed=observed, result=FindingResult.INCONCLUSIVE,
+                evidence=(reference,) if reference is not None else (),
+                reason="Model error: Unable to produce a supported finding",
+            )
+            return Execution(findings=(diagnostic,), goal_verified=False,
+                             status=execution.status, cleanup_status=execution.cleanup_status)
         checked = []
         for finding in execution.findings:
             if (finding.current_result != FindingResult.INCONCLUSIVE

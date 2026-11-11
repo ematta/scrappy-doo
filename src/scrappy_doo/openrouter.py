@@ -18,6 +18,7 @@ FINAL_ANSWER_SCHEMA = {
         "goal_verified": {"type": "boolean"},
         "findings": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "properties": {
@@ -102,7 +103,19 @@ class OpenRouterModel:
         self._goal: str | None = None
         self._observations: tuple[Observation, ...] = ()
         self._pending_call_id: str | None = None
+        self._correction: str | None = None
         self.usage = Usage()
+
+    def correct(self, *, goal: str, observations: tuple[Observation, ...], feedback: str) -> ToolCall | FinalAnswer:
+        """Ask for one revised answer without introducing another tool action."""
+        if (self._goal is None or goal != self._goal or observations != self._observations
+                or self._pending_call_id is not None or not isinstance(feedback, str) or not feedback.strip()):
+            raise OpenRouterError("Correction requires the existing completed model turn")
+        self._correction = feedback
+        try:
+            return self.respond(goal=goal, observations=observations)
+        finally:
+            self._correction = None
 
     def _add_usage(self, raw: object) -> None:
         values = raw if isinstance(raw, dict) else {}
@@ -223,6 +236,8 @@ class OpenRouterModel:
                              "content": new_observations[0].content})
         elif new_observations:
             raise OpenRouterError("Unexpected tool observation")
+        if self._correction is not None:
+            messages.append({"role": "user", "content": self._correction})
 
         body = {
             "model": self._model,
@@ -244,6 +259,8 @@ class OpenRouterModel:
             body["tool_choice"] = {
                 "type": "function", "function": {"name": self._required_initial_tool},
             }
+        elif self._correction is not None:
+            body["tool_choice"] = "none"
         try:
             response = self._transport(
                 url="https://openrouter.ai/api/v1/chat/completions",

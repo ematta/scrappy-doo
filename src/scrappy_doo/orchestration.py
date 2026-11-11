@@ -76,13 +76,16 @@ class ExecutionRunner:
         approve: Callable[[ToolCall], bool | None] | None = None,
         clock: Callable[[], float] | None = None,
         trace: Any | None = None,
+        validate_answer: Callable[[tuple[Finding, ...]], str | None] | None = None,
     ):
         self._model = model
         self._tools = dict(tools)
         self._approve = approve
         self._clock = clock or time.monotonic
         self._trace = trace
+        self._validate_answer = validate_answer
         self.proposals: tuple[KnowledgeProposal, ...] = ()
+        self.correction_failed = False
 
     @staticmethod
     def _supported(finding: Finding) -> Finding:
@@ -161,12 +164,15 @@ class ExecutionRunner:
 
     def run(self, *, goal: str, policy: RunPolicy) -> Execution:
         self.proposals = ()
+        self.correction_failed = False
         start = self._clock()
         wait_seconds = 0.0
         calls = 0
         findings: list[Finding] = []
         observations: list[Observation] = []
         completed_calls: list[tuple[str, dict[str, Any]]] = []
+        correction_feedback: str | None = None
+        correction_attempted = False
 
         def checked(execution: Execution) -> Execution:
             return Execution(
@@ -193,13 +199,31 @@ class ExecutionRunner:
         try:
             for _ in range(policy.max_model_turns):
                 if timed_out():
+                    if correction_feedback is not None:
+                        self.correction_failed = True
+                        return blocked("Model error: Finding correction exceeded the time limit")
                     return blocked("Active execution time limit reached")
                 try:
-                    response = self._model.respond(goal=goal, observations=tuple(observations))
+                    if correction_feedback is not None:
+                        response = self._model.correct(
+                            goal=goal, observations=tuple(observations), feedback=correction_feedback,
+                        )
+                    else:
+                        response = self._model.respond(goal=goal, observations=tuple(observations))
                 except Exception as error:
+                    if correction_feedback is not None:
+                        self.correction_failed = True
+                        return blocked("Model error: Finding correction failed")
                     return blocked(f"Model error: {error}")
                 if timed_out():
+                    if correction_feedback is not None:
+                        self.correction_failed = True
+                        return blocked("Model error: Finding correction exceeded the time limit")
                     return blocked("Active execution time limit reached")
+
+                if correction_feedback is not None and not isinstance(response, FinalAnswer):
+                    self.correction_failed = True
+                    return blocked("Model error: Finding correction returned an invalid response")
 
                 if isinstance(response, FindingUpdate):
                     if not isinstance(response.finding, Finding):
@@ -214,8 +238,17 @@ class ExecutionRunner:
                     if (not isinstance(response.proposals, tuple)
                             or any(not isinstance(item, KnowledgeProposal) for item in response.proposals)):
                         return blocked("Invalid knowledge proposals")
+                    candidate_findings = tuple([*findings, *(self._supported(item) for item in response.findings)])
+                    feedback = self._validate_answer(candidate_findings) if self._validate_answer is not None else None
+                    if feedback:
+                        if correction_attempted:
+                            self.correction_failed = True
+                            return blocked("Model error: No supported finding after correction")
+                        correction_attempted = True
+                        correction_feedback = feedback
+                        continue
                     self.proposals = response.proposals
-                    findings.extend(self._supported(item) for item in response.findings)
+                    findings = list(candidate_findings)
                     return checked(Execution(findings=tuple(findings), goal_verified=response.goal_verified))
                 if not isinstance(response, ToolCall):
                     return blocked("Invalid model response")
@@ -267,6 +300,9 @@ class ExecutionRunner:
                     return blocked("Invalid tool result")
                 completed_calls.append((response.name, arguments))
                 observations.append(Observation(content=output))
+            if correction_feedback is not None:
+                self.correction_failed = True
+                return blocked("Model error: Finding correction exceeded the model turn limit")
             return blocked("Model turn limit reached")
         except KeyboardInterrupt:
             return checked(Execution(
